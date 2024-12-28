@@ -5,17 +5,15 @@ contract MultiSigWalletWithTimelock {
     struct Transaction {
         address to;
         uint256 value;
-        uint256 timestamp;
         uint256 approvals;
         bool executed;
         uint256 requiredSignatures;
-        uint256 timelockDuration;
+        uint256 executeAfter;
+        address[] signers;
     }
 
     mapping(uint txId => mapping(address signer => bool approved))
         public transactionApprovals;
-    mapping(uint txId => mapping(address signer => bool isSigner))
-        public transactionSigners;
 
     Transaction[] public transactions;
 
@@ -28,21 +26,37 @@ contract MultiSigWalletWithTimelock {
     event TransactionApproved(uint indexed txId, address indexed approver);
     event TransactionExecuted(uint indexed txId);
 
+    function initialize() external {}
+
     modifier onlySigner(uint _txId) {
-        require(
-            transactionSigners[_txId][msg.sender],
-            "Not an authorized signer"
-        );
+        bool isSigner = false;
+        address[] memory signers = transactions[_txId].signers;
+
+        for (uint i = 0; i < signers.length; i++) {
+            if (signers[i] == msg.sender) {
+                isSigner = true;
+                break;
+            }
+        }
+        require(isSigner, "Only signers can call this function");
         _;
     }
 
-    function submitTransaction(
+    modifier onlyUniqueSigners(address[] memory _signers) {
+        for (uint i = 0; i < _signers.length; i++) {
+            for (uint j = i + 1; j < _signers.length; j++) {
+                require(_signers[i] != _signers[j], "Signers must be unique");
+            }
+        }
+        _;
+    }
+
+    function submitETHTransaction(
         address _to,
-        uint _value,
         address[] memory _signers,
         uint _requiredSignatures,
-        uint _timelockDuration
-    ) external {
+        uint _executeAfter
+    ) external payable onlyUniqueSigners(_signers) {
         require(_to != address(0), "Invalid recipient");
         require(_signers.length > 0, "Signers required");
         require(
@@ -54,20 +68,16 @@ contract MultiSigWalletWithTimelock {
         transactions.push(
             Transaction({
                 to: _to,
-                value: _value,
-                timestamp: block.timestamp,
+                value: msg.value,
                 approvals: 0,
                 executed: false,
                 requiredSignatures: _requiredSignatures,
-                timelockDuration: _timelockDuration
+                executeAfter: _executeAfter,
+                signers: _signers
             })
         );
 
-        for (uint i = 0; i < _signers.length; i++) {
-            transactionSigners[txId][_signers[i]] = true;
-        }
-
-        emit TransactionCreated(txId, _to, _value, block.timestamp);
+        emit TransactionCreated(txId, _to, msg.value, block.timestamp);
     }
 
     function approveTransaction(uint _txId) external onlySigner(_txId) {
@@ -85,7 +95,7 @@ contract MultiSigWalletWithTimelock {
         emit TransactionApproved(_txId, msg.sender);
     }
 
-    function executeTransaction(uint _txId) external onlySigner(_txId) {
+    function executeETHTransaction(uint _txId) external onlySigner(_txId) {
         Transaction storage transaction = transactions[_txId];
 
         require(!transaction.executed, "Transaction already executed");
@@ -94,8 +104,7 @@ contract MultiSigWalletWithTimelock {
             "Not enough approvals"
         );
         require(
-            block.timestamp >=
-                transaction.timestamp + transaction.timelockDuration,
+            block.timestamp >= transaction.executeAfter,
             "Transaction is timelocked"
         );
 
